@@ -1,0 +1,18 @@
+# Ignore files and directories
+node_modules/
+dist/
+build/
+*.min.js
+*.min.css
+
+# Python files
+*.py
+*.pyc
+__pycache__/
+
+# Other files
+.git/
+.env
+*.log
+*.md
+requirements.txt
