@@ -3,30 +3,87 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KJC - Botnet</title>
+    <title>Att-Chat Load Test Bot</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <div class="container">
-        <h1>🚀 KJC Bot Crawl</h1>
-        <p>Simple interface for managing users via FastAPI backend</p>
-        
-        <div class="tabs">
-            <button class="tab active" onclick="showTab('botnet')">🤖 Bot Crawl</button>
+        <h1>🚀 Att-Chat Loading Test Bot</h1>
+        <p>Giả lập nhiều khung chat và gọi API đồng thời để test khả năng chịu tải.</p>
+
+        <div class="card">
+            <h3>🔑 Lấy token đăng nhập</h3>
+            <div class="controls-grid">
+                <div class="form-group">
+                    <label for="login-endpoint">Login endpoint</label>
+                    <input type="text" id="login-endpoint" value="http://localhost:8080/admin/auth/login" />
+                </div>
+                <div class="form-group">
+                    <label for="login-username">Login Username</label>
+                    <input type="text" id="login-username" value="admin" />
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Login Password</label>
+                    <input type="password" id="login-password" value="admin123" />
+                </div>
+            </div>
+            <div class="actions">
+                <button class="btn" id="login-btn" onclick="getToken()">Get Token</button>
+                <br />
+                <br />
+                <div id="token-display" class="token-display">Chưa có token</div>
+            </div>
         </div>
 
-        <div id="botnet" class="tab-content active">
-            <h2>🤖 SJC Price Scraper</h2>
+        <div class="controls-grid">
             <div class="form-group">
-                <p>Crawl SJC gold prices from webgia.com using Selenium WebDriver</p>
-                <button type="button" class="btn" id="botnet-btn" onclick="runBotnet()">🚀 Scrape SJC Prices</button>
+                <label for="chat-count">Số khung chat tạo cùng lúc</label>
+                <input type="number" id="chat-count" min="1" value="1" />
             </div>
-            <div id="botnet-result"></div>
+            <div class="form-group">
+                <label for="api-count">Số API (TCP) call đồng thời trong 1 khung chat</label>
+                <input type="number" id="api-count" min="1" value="3" />
+            </div>
+            <div class="form-group--inline form-group">
+                <div class="inline-method">
+                    <label for="api-method">HTTP method</label>
+                    <select id="api-method">
+                        <option value="GET" selected>GET</option>
+                        <option value="POST">POST</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="api-endpoint">HTTP API endpoint</label>
+                    <input type="text" id="api-endpoint" value="http://localhost:8083/api/data-botting" />
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="ws-endpoint">WebSocket endpoint</label>
+                <input type="text" id="ws-endpoint" value="ws://localhost:8086/ws" />
+            </div>
         </div>
-        
-        <div class="api-info">
-            <p><em>KJC Testing API</em></p>
+
+        <div class="actions">
+            <button class="btn" id="start-btn" onclick="startLoadTest()">🚀 Bắt đầu test</button>
+            <button class="btn btn-secondary" onclick="resetDashboard()">⏹️ Stop</button>
         </div>
+
+        <div id="summary" class="stats-card">
+            <h3>Kết quả nhanh</h3>
+            <div id="summary-content">Chưa chạy.</div>
+        </div>
+
+        <div class="grid-title">
+            <h3>Khung chat mô phỏng</h3>
+            <small>Mỗi khung đại diện một phiên chat mở đồng thời.</small>
+        </div>
+        <div id="chat-grid" class="chat-grid"></div>
+
+        <div class="grid-title">
+            <h3>Kết quả API burst</h3>
+            <small>Danh sách phản hồi/ lỗi của các call đồng thời.</small>
+        </div>
+        <div id="api-results" class="api-results"></div>
     </div>
     
     <script src="/static/js/script.js"></script>

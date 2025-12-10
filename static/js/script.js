@@ -1,488 +1,314 @@
-function showTab(tabName) {
-    const tabs = document.querySelectorAll('.tab');
-    const contents = document.querySelectorAll('.tab-content');
+const summaryEl = () => document.getElementById('summary-content');
+const chatGridEl = () => document.getElementById('chat-grid');
+const apiResultsEl = () => document.getElementById('api-results');
+const startBtn = () => document.getElementById('start-btn');
+const tokenDisplayEl = () => document.getElementById('token-display');
 
-    tabs.forEach(tab => tab.classList.remove('active'));
-    contents.forEach(content => content.classList.remove('active'));
-
-    event.target.classList.add('active');
-    document.getElementById(tabName).classList.add('active');
-
-    // Always keep Bot Crawl tab active and show its content
-    const botnetTab = document.querySelector('button[onclick*="botnet"]');
-    const botnetContent = document.getElementById('botnet');
-    if (botnetTab && botnetContent) {
-        botnetTab.classList.add('active');
-        botnetContent.classList.add('active');
+let authToken = '';
+let stopRequested = false;
+function resetDashboard() {
+    chatGridEl().innerHTML = '';
+    apiResultsEl().innerHTML = '';
+    if (summaryEl()) summaryEl().textContent = 'Chưa chạy.';
+    const btn = startBtn();
+    if (btn) {
+        btn.disabled = true;
+        btn.classList.add('disabled');
     }
+    stopRequested = true;
+}
 
-    if (tabName === 'list') {
-        loadUsers();
+function renderChatWindows(count) {
+    const grid = chatGridEl();
+    grid.innerHTML = '';
+    for (let i = 1; i <= count; i++) {
+        const card = document.createElement('div');
+        card.className = 'chat-card';
+        card.innerHTML = `
+            <div class="chat-card__header">
+                <span>Chat #${i}</span>
+                <span class="badge">pending</span>
+            </div>
+            <div class="chat-card__body">
+                <div class="bubble bubble--in">Init payload</div>
+            </div>
+        `;
+        grid.appendChild(card);
     }
 }
 
-function showResult(elementId, message, isError = false, persistent = false) {
-    const element = document.getElementById(elementId);
-    element.innerHTML = `<div class="alert ${
-        isError ? 'alert-error' : 'alert-success'
-    }">${message}</div>`;
-    
+function updateChatStatuses(statusText, type = 'ok') {
+    chatGridEl().querySelectorAll('.badge').forEach((b) => {
+        b.textContent = statusText;
+        b.className = `badge badge--${type}`;
+    });
 }
 
-// Direct content display without alert wrapper - for complex HTML content
-function showContent(elementId, content) {
-    let element = document.getElementById(elementId);
-    if (!element) {
-        // Nếu không tìm thấy theo id, thử tìm theo class
-        const elementsByClass = document.getElementsByClassName(elementId);
-        if (elementsByClass.length > 0) {
-            element = elementsByClass[0];
-        }
-    }
-    if (element) {
-        element.innerHTML = content;
-    } else {
-        console.warn(`Element with id or class '${elementId}' not found.`);
-    }
+function renderResultSection(title, results) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'result-section';
+
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    wrapper.appendChild(heading);
+
+    results.forEach((r, idx) => {
+        const row = document.createElement('div');
+        row.className = `api-row ${r.ok ? 'ok' : 'fail'}`;
+        row.innerHTML = `
+            <div class="api-row__left">
+                <strong>#${idx + 1}</strong> | ${r.status || 'ERR'} | ${r.ms.toFixed(1)} ms
+            </div>
+            <div class="api-row__right">
+                ${r.ok ? '✅' : '❌'} ${r.message || ''}
+            </div>
+        `;
+        wrapper.appendChild(row);
+    });
+    return wrapper;
 }
 
-async function runBotnet() {
-    const botnetBtn = document.getElementById('botnet-btn');
-    const originalText = botnetBtn ? botnetBtn.innerHTML : '';
+function renderApiAndWsResults(apiResults, wsResults) {
+    const container = apiResultsEl();
+    container.innerHTML = '';
+    container.appendChild(renderResultSection('HTTP API burst', apiResults));
+    container.appendChild(renderResultSection('WebSocket burst', wsResults));
+}
 
-    // Set loading state
-    if (botnetBtn) {
-        botnetBtn.classList.add('loading');
-        botnetBtn.disabled = true;
-        botnetBtn.innerHTML = '⏳ Scraping SJC...';
+function renderSummary(stats) {
+    summaryEl().innerHTML = `
+        <div class="stat-line">
+            <span>Chat windows:</span> <strong>${stats.chatCount}</strong>
+        </div>
+        <div class="stat-line">
+            <span>API calls:</span> <strong>${stats.apiCount}</strong>
+        </div>
+        <div class="stat-line">
+            <span>Thành công:</span> <strong>${stats.success}</strong> | Thất bại: <strong>${stats.fail}</strong>
+        </div>
+        <div class="stat-line">
+            <span>Độ trễ (ms):</span> min <strong>${stats.min.toFixed(1)}</strong> / avg <strong>${stats.avg.toFixed(1)}</strong> / max <strong>${stats.max.toFixed(1)}</strong>
+        </div>
+        <div class="stat-line">
+            <span>WS thành công / thất bại:</span> <strong>${stats.wsSuccess}</strong> / <strong>${stats.wsFail}</strong>
+        </div>
+        <div class="stat-line">
+            <span>WS latency (ms):</span> min <strong>${stats.wsMin.toFixed(1)}</strong> / avg <strong>${stats.wsAvg.toFixed(1)}</strong> / max <strong>${stats.wsMax.toFixed(1)}</strong>
+        </div>
+    `;
+}
+
+async function runApiBurst(endpoint, amount, token, method = 'GET') {
+    const tasks = [];
+    for (let i = 0; i < amount; i++) {
+        tasks.push((async () => {
+            const started = performance.now();
+            try {
+                if (stopRequested) throw new Error('stopped');
+                const headers = token ? { Authorization: `Bearer ${token}` } : {};
+                const options = { method, headers };
+                if (method === 'POST') {
+                    headers['Content-Type'] = 'application/json';
+                    options.body = JSON.stringify({});
+                }
+                const resp = await fetch(endpoint, options);
+                const ms = performance.now() - started;
+                return { ok: resp.ok, status: resp.status, ms, message: resp.statusText || 'OK' };
+            } catch (err) {
+                const ms = performance.now() - started;
+                return { ok: false, status: 0, ms, message: err.message };
+            }
+        })());
     }
+    return Promise.all(tasks);
+}
 
+function appendTokenToWs(endpoint, token) {
+    if (!token) return endpoint;
     try {
-        // Always call the absolute API endpoint
-        const response = await fetch('/api/scrape-sjc', {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
-
-        const result = await response.json();
-
-        if (response.ok && result.status === 'success') {
-            // Display successful scraping results
-            let message = `✅ SJC Price Scraping Completed!<br>`;
-            message += `🔍 Source: ${result.data.url}<br>`;
-            message += `📄 Title: ${result.data.title}<br>`;
-            message += `💰 Prices Found: ${result.data.prices_found}<br>`;
-
-            if (result.data.prices && result.data.prices.length > 0) {
-                message += `<br>📊 Price Details:<br>`;
-                result.data.prices.slice(0, 5).forEach((price, index) => {
-                    message += `💰 ${index + 1}. ${price.price} - ${price.context}<br>`;
-                });
-
-                if (result.data.prices.length > 5) {
-                    message += `... and ${result.data.prices.length - 5} more prices<br>`;
-                }
-            }
-
-
-            // Hiển thị giá trị đặc biệt nếu có (Mua/Bán)
-            if (result.data.sjc_05_1_2_chi_mua || result.data.sjc_05_1_2_chi_ban) {
-                message += `<br>💡 <b>Vàng SJC 0.5 chỉ, 1 chỉ, 2 chỉ:</b><br>`;
-                if (result.data.sjc_05_1_2_chi_mua) {
-                    message += `Mua: <span style="color:#007bff">${result.data.sjc_05_1_2_chi_mua}</span><br>`;
-                }
-                if (result.data.sjc_05_1_2_chi_ban) {
-                    message += `Bán: <span style="color:#dc3545">${result.data.sjc_05_1_2_chi_ban}</span>`;
-                }
-            }
-
-            message += `<br>⏰ Scraped at: ${new Date(result.data.timestamp * 1000).toLocaleString()}`;
-
-            // Hiển thị log ở vị trí KJC Testing API
-            showContent('api-info', message);
-        } else {
-            // Display error message
-            const errorMsg = result.message || 'Unknown error occurred';
-            showResult('botnet-result', `❌ SJC Scraping Failed: ${errorMsg}`, true);
-            showContent('api-info', `❌ SJC Scraping Failed: ${errorMsg}`);
-        }
-
-    } catch (error) {
-    showResult('botnet-result', `❌ Network Error: ${error.message}`, true);
-    showContent('api-info', `❌ Network Error: ${error.message}`);
-    } finally {
-        // Reset loading state
-        if (botnetBtn) {
-            botnetBtn.classList.remove('loading');
-            botnetBtn.disabled = false;
-            botnetBtn.innerHTML = originalText;
-        }
+        const url = new URL(endpoint);
+        url.searchParams.set('token', token);
+        return url.toString();
+    } catch {
+        return endpoint + (endpoint.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
     }
 }
 
-// Global variable to track browser view state
-let browserViewVisible = false;
+async function runWsBurst(endpoint, amount, token) {
+    const tasks = [];
+    for (let i = 0; i < amount; i++) {
+        tasks.push(new Promise((resolve) => {
+            const wsUrl = appendTokenToWs(endpoint, token);
+            const started = performance.now();
+            try {
+                if (stopRequested) throw new Error('stopped');
+                const ws = new WebSocket(wsUrl);
+                const timeout = setTimeout(() => {
+                    try { ws.close(); } catch {}
+                    resolve({ ok: false, status: 'timeout', ms: performance.now() - started, message: 'timeout' });
+                }, 8000);
 
-// 🔄 Refresh Browser View if Currently Visible
-function refreshBrowserViewIfVisible() {
-    if (browserViewVisible) {
-        browserViewVisible = false; // Reset state to allow reload
-        loadActiveBrowsers();
+                ws.onopen = () => {
+                    const ms = performance.now() - started;
+                    clearTimeout(timeout);
+                    try { ws.close(); } catch {}
+                    resolve({ ok: true, status: 'open', ms, message: 'opened' });
+                };
+                ws.onerror = (err) => {
+                    clearTimeout(timeout);
+                    resolve({ ok: false, status: 'error', ms: performance.now() - started, message: err?.message || 'ws error' });
+                };
+            } catch (e) {
+                resolve({ ok: false, status: 'error', ms: performance.now() - started, message: e.message });
+            }
+        }));
     }
+    return Promise.all(tasks);
 }
 
-// 🌐 Load Active Browser Information with Smooth Toggle Animation
-async function loadActiveBrowsers() {
-    const element = document.getElementById('botnet-result');
-    
-    // If currently visible, hide with smooth animation - IMPROVED VERSION
-    if (browserViewVisible) {
-        // Start collapse animation
-        const browserInfo = element.querySelector('.browser-info');
-        if (browserInfo) {
-            // Ensure clean transition state
-            browserInfo.style.transition = 'all 0.3s ease-out';
-            browserInfo.style.maxHeight = browserInfo.scrollHeight + 'px';
-            
-            // Force reflow then start collapse
-            requestAnimationFrame(() => {
-                browserInfo.style.maxHeight = '0px';
-                browserInfo.style.opacity = '0';
-                browserInfo.style.padding = '0px 15px';
-                browserInfo.style.marginBottom = '0px';
-                
-                // Clean up after animation with proper timing
-                setTimeout(() => {
-                    if (element && element.innerHTML) {  // Safety check
-                        element.innerHTML = '';
-                    }
-                    browserViewVisible = false;
-                }, 350);  // Slightly longer than animation duration
-            });
-        } else {
-            // Fallback for instant hide if no animation element
-            element.innerHTML = '';
-            browserViewVisible = false;
-        }
+function computeStats(apiResults) {
+    if (!apiResults.length) {
+        return { success: 0, fail: 0, min: 0, max: 0, avg: 0 };
+    }
+    let min = Infinity, max = 0, sum = 0, success = 0;
+    apiResults.forEach(r => {
+        min = Math.min(min, r.ms);
+        max = Math.max(max, r.ms);
+        sum += r.ms;
+        if (r.ok) success += 1;
+    });
+    return {
+        success,
+        fail: apiResults.length - success,
+        min,
+        max,
+        avg: sum / apiResults.length
+    };
+}
+
+async function startLoadTest() {
+    stopRequested = false;
+    if (!authToken) {
+        alert('Vui lòng lấy token trước khi chạy test.');
         return;
     }
-    
-    try {
-        const response = await fetch('/api/botnet/browsers');
-        const result = await response.json();
-        
-        if (response.ok) {
-            // Create HTML with initial hidden state for animation
-            let browserHtml = `<div class="browser-info" style="
-                border: 1px solid #ddd; 
-                border-radius: 8px; 
-                padding: 0px 15px; 
-                background: #f9f9f9; 
-                max-height: 0px; 
-                opacity: 0; 
-                overflow: hidden;
-                transition: all 0.4s ease-in-out;
-                margin-bottom: 0px;
-            ">`;
-            browserHtml += `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; margin-top: 15px;">
-                <h4 style="margin: 0;">🌐 Active Bot Browsers (${result.total_browsers})</h4>
-                <button onclick="loadActiveBrowsers()" style="background: #dc3545; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.2s;">
-                    ❌ Hide Browser List
-                </button>
-            </div>`;
-            
-            if (result.total_browsers === 0) {
-                browserHtml += `<p>No active browsers found.</p>`;
-            } else {
-                browserHtml += `<table border="1" style="width:100%; border-collapse: collapse; margin-top: 10px;">`;
-                browserHtml += `<tr style="background-color: #f0f0f0;">
-                    <th>Bot Username</th>
-                    <th>Status</th>
-                    <th>WebSocket</th>
-                    <th>Uptime</th>
-                    <th>User Agent</th>
-                    <th>Cookies</th>
-                    <th>Login Attempts</th>
-                    <th>Actions</th>
-                </tr>`;
-                
-                result.browsers.forEach(browser => {
-                    const statusIcon = browser.is_logged_in ? '✅' : '❌';
-                    const statusText = browser.is_logged_in ? 'Logged In' : 'Not Logged';
-                    const userAgentShort = browser.user_agent.substring(0, 50) + '...';
-                    
-                    // WebSocket information
-                    const wsInfo = browser.websocket_info || {};
-                    const wsConnected = wsInfo.connected || false;
-                    const wsStatus = wsInfo.status || 'No connection';
-                    const wsUrl = wsInfo.url || 'No URL';
-                    const wsConnectTime = wsInfo.connect_time ? new Date(wsInfo.connect_time * 1000).toLocaleTimeString() : 'Never';
-                    const wsLastPing = wsInfo.last_ping ? new Date(wsInfo.last_ping * 1000).toLocaleTimeString() : 'Never';
-                    
-                    const isPersistent = wsStatus.includes('persistent');
-                    const wsIcon = wsConnected ? (isPersistent ? '�' : '�🔗') : '❌';
-                    const wsColor = wsConnected ? 'green' : 'red';
-                    const wsStatusText = wsConnected ? (isPersistent ? 'Persistent' : 'Connected') : 'Failed';
-                    const wsTitle = `Status: ${wsStatus}\nURL: ${wsUrl}\nConnect Time: ${wsConnectTime}\nLast Ping: ${wsLastPing}`;
-                    
-                    // Timing information
-                    const timing = browser.timing || {};
-                    const uptimeFormatted = timing.uptime_formatted || 'Unknown';
-                    const createdAt = timing.created_at || 'Unknown';
-                    const uptimeTitle = `Created: ${createdAt}\nUptime: ${uptimeFormatted}`;
-                    
-                    browserHtml += `<tr>
-                        <td><strong>${browser.username}</strong></td>
-                        <td>${statusIcon} ${statusText}</td>
-                        <td title="${wsTitle}" style="color: ${wsColor}; cursor: help;">
-                            ${wsIcon} ${wsStatusText}
-                            <br><small style="font-size: 10px;">${wsStatus}</small>
-                        </td>
-                        <td title="${uptimeTitle}" style="cursor: help; text-align: center;">
-                            ⏱️ ${uptimeFormatted}
-                            <br><small style="font-size: 10px;">${createdAt.split(' ')[1] || 'Unknown'}</small>
-                        </td>
-                        <td title="${browser.user_agent}" style="font-size: 11px;">${userAgentShort}</td>
-                        <td>${browser.cookies_count} cookies</td>
-                        <td>${browser.login_attempts} attempts</td>
-                        <td>
-                            <button onclick="viewBrowserDetails('${browser.username}')" 
-                                    style="background: #007bff; color: white; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; margin-right: 4px; transition: all 0.2s ease;"
-                                    onmouseover="this.style.background='#0056b3'; this.style.transform='scale(1.05)'"
-                                    onmouseout="this.style.background='#007bff'; this.style.transform='scale(1)'">
-                                👁️ View
-                            </button>
-                            <button onclick="closeBrowser('${browser.username}')" 
-                                    style="background: #dc3545; color: white; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer; transition: all 0.2s ease;"
-                                    onmouseover="this.style.background='#c82333'; this.style.transform='scale(1.05)'"
-                                    onmouseout="this.style.background='#dc3545'; this.style.transform='scale(1)'">
-                                🗑️ Close
-                            </button>
-                        </td>
-                    </tr>`;
-                });
-                
-                browserHtml += `</table>`;
-                browserHtml += `<div style="margin-top: 15px; text-align: center; border-top: 1px solid #ddd; padding-top: 10px;">
-                    <button onclick="closeAllBrowsers()" 
-                            style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 10px; transition: all 0.2s ease; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
-                            onmouseover="this.style.background='#c82333'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(0,0,0,0.2)'"
-                            onmouseout="this.style.background='#dc3545'; this.style.transform='translateY(0px)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'">
-                        🗑️ Close All Browsers
-                    </button>
-                    <button onclick="refreshBrowserViewIfVisible()" 
-                            style="background: #28a745; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
-                            onmouseover="this.style.background='#218838'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(0,0,0,0.2)'"
-                            onmouseout="this.style.background='#28a745'; this.style.transform='translateY(0px)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'">
-                        🔄 Refresh List
-                    </button>
-                </div>`;
-            }
-            
-            browserHtml += `</div>`;
-            
-            // Use showContent() to avoid alert wrapper interference
-            showContent('botnet-result', browserHtml);
-            
-            // SIMPLIFIED STABLE ANIMATION - No complex timing issues
-            setTimeout(() => {
-                const browserInfo = document.querySelector('.browser-info');
-                if (browserInfo && browserViewVisible) {  // Safety check
-                    // Get natural content height first
-                    browserInfo.style.maxHeight = 'none';
-                    const contentHeight = browserInfo.scrollHeight;
-                    
-                    // Reset to collapsed state
-                    browserInfo.style.maxHeight = '0px';
-                    browserInfo.style.opacity = '0';
-                    
-                    // Single requestAnimationFrame for clean animation
-                    requestAnimationFrame(() => {
-                        if (browserInfo && browserViewVisible) {  // Double safety check
-                            browserInfo.style.maxHeight = contentHeight + 'px';
-                            browserInfo.style.opacity = '1';
-                            browserInfo.style.padding = '15px';
-                            browserInfo.style.marginBottom = '10px';
-                        }
-                    });
-                    
-                    // Final cleanup - set to auto height after animation
-                    setTimeout(() => {
-                        if (browserInfo && browserViewVisible) {
-                            browserInfo.style.maxHeight = 'none';
-                        }
-                    }, 500);  // Clean timeout after animation
-                }
-            }, 50);  // Clean initial delay
-            
-            browserViewVisible = true;
-        } else {
-            showResult('botnet-result', `❌ Error loading browsers: ${result.detail || 'Unknown error'}`, true);
-        }
-    } catch (error) {
-        showResult('botnet-result', `❌ Error: ${error.message}`, true);
-    }
-}
+    const chatCount = Math.max(1, Number(document.getElementById('chat-count').value) || 0);
+    const apiCount = Math.max(1, Number(document.getElementById('api-count').value) || 0);
+    const apiEndpoint = (document.getElementById('api-endpoint').value || '').trim() || '/api/data';
+    const apiMethod = (document.getElementById('api-method').value || 'GET').toUpperCase();
+    const wsEndpoint = (document.getElementById('ws-endpoint').value || '').trim() || 'wss://echo.websocket.events/';
 
-// �️ View Browser Details with WebSocket Information
-async function viewBrowserDetails(username) {
-    try {
-        const response = await fetch('/api/botnet/browsers');
-        const result = await response.json();
-        
-        if (response.ok) {
-            const browser = result.browsers.find(b => b.username === username);
-            if (!browser) {
-                showResult('botnet-result', `❌ Browser for ${username} not found`, true);
-                return;
-            }
-            
-            // WebSocket information
-            const wsInfo = browser.websocket_info || {};
-            const wsConnected = wsInfo.connected || false;
-            const wsStatus = wsInfo.status || 'No connection';
-            const wsUrl = wsInfo.url || 'No URL';
-            const wsConnectTime = wsInfo.connect_time ? new Date(wsInfo.connect_time * 1000).toLocaleString() : 'Never';
-            const wsLastResponse = wsInfo.last_response || 'No response';
-            const wsError = wsInfo.error || 'No error';
-            const wsLastPing = wsInfo.last_ping ? new Date(wsInfo.last_ping * 1000).toLocaleString() : 'Never';
-            const wsTaskActive = wsInfo.monitoring_task_active || false;
-            const isPersistent = wsStatus.includes('persistent') || wsStatus.includes('monitoring');
-            
-            let detailsHtml = `<div class="browser-details" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0; border: 1px solid #ddd;">`;
-            detailsHtml += `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 2px solid #007bff; padding-bottom: 10px;">
-                <h4 style="margin: 0; color: #007bff;">🌐 Browser Details: ${username}</h4>
-                <button onclick="loadActiveBrowsers()" style="background: #6c757d; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">
-                    ← Back to Browser List
-                </button>
-            </div>`;
-            
-            // Browser timing information
-            const timing = browser.timing || {};
-            const uptimeFormatted = timing.uptime_formatted || 'Unknown';
-            const createdAt = timing.created_at || 'Unknown';
-            const uptimeSeconds = timing.uptime_seconds || 0;
-            
-            // Basic Info
-            detailsHtml += `<div style="margin-bottom: 15px;">
-                <h5>📊 Basic Information</h5>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr><td><strong>Username:</strong></td><td>${browser.username}</td></tr>
-                    <tr><td><strong>Login Status:</strong></td><td>${browser.is_logged_in ? '✅ Logged In' : '❌ Not Logged'}</td></tr>
-                    <tr><td><strong>Cookies:</strong></td><td>${browser.cookies_count} active cookies</td></tr>
-                    <tr><td><strong>Login Attempts:</strong></td><td>${browser.login_attempts}</td></tr>
-                    <tr><td><strong>Last Login:</strong></td><td>${browser.last_login ? new Date(browser.last_login * 1000).toLocaleString() : 'Never'}</td></tr>
-                    <tr><td><strong>User Agent:</strong></td><td style="font-size: 12px; word-break: break-all;">${browser.user_agent}</td></tr>
-                </table>
-            </div>`;
-            
-            // Timing Information
-            detailsHtml += `<div style="margin-bottom: 15px;">
-                <h5>⏱️ Browser Timing Information</h5>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr><td><strong>Created At:</strong></td><td>${createdAt}</td></tr>
-                    <tr><td><strong>Uptime:</strong></td><td>${uptimeFormatted} (${Math.round(uptimeSeconds)}s total)</td></tr>
-                    <tr><td><strong>Session Duration:</strong></td><td>${uptimeFormatted}</td></tr>
-                </table>
-            </div>`;
-            
-            // WebSocket Info
-            detailsHtml += `<div style="margin-bottom: 15px;">
-                <h5>🔗 WebSocket Information ${isPersistent ? '(Persistent Connection)' : ''}</h5>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr><td><strong>Connection Status:</strong></td><td style="color: ${wsConnected ? 'green' : 'red'};">${wsConnected ? (isPersistent ? '🔄 Persistent Connected' : '✅ Connected') : '❌ Disconnected'}</td></tr>
-                    <tr><td><strong>Connection Type:</strong></td><td style="color: ${isPersistent ? 'blue' : 'orange'};">${isPersistent ? '🔄 Persistent (Background Monitoring)' : '⚡ Standard'}</td></tr>
-                    <tr><td><strong>Status:</strong></td><td>${wsStatus}</td></tr>
-                    <tr><td><strong>Monitoring Task:</strong></td><td style="color: ${wsTaskActive ? 'green' : 'red'};">${wsTaskActive ? '✅ Active' : '❌ Inactive'}</td></tr>
-                    <tr><td><strong>WebSocket URL:</strong></td><td style="font-size: 11px; word-break: break-all;">${wsUrl}</td></tr>
-                    <tr><td><strong>Connect Time:</strong></td><td>${wsConnectTime}</td></tr>
-                    <tr><td><strong>Last Ping:</strong></td><td>${wsLastPing}</td></tr>
-                    <tr><td><strong>Last Response:</strong></td><td style="font-size: 11px; max-width: 300px; word-break: break-all;">${typeof wsLastResponse === 'object' ? JSON.stringify(wsLastResponse) : wsLastResponse}</td></tr>
-                    ${wsError && wsError !== 'No error' ? `<tr><td><strong>Error:</strong></td><td style="color: red; font-size: 11px;">${wsError}</td></tr>` : ''}
-                </table>
-            </div>`;
-            
-            detailsHtml += `<div style="text-align: center; margin-top: 15px; border-top: 1px solid #ddd; padding-top: 15px;">
-                <button onclick="closeBrowser('${username}')" 
-                        style="background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 10px;">
-                    🗑️ Close This Browser
-                </button>
-                <button onclick="loadActiveBrowsers()" 
-                        style="background: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
-                    ← Return to Browser List
-                </button>
-            </div>`;
-            
-            detailsHtml += `</div>`;
-            
-            // Use showContent() to avoid alert wrapper interference
-            showContent('botnet-result', detailsHtml);
-            browserViewVisible = true; // Keep browser view state
-        } else {
-            showResult('botnet-result', `❌ Error loading browser details: ${result.detail || 'Unknown error'}`, true);
-        }
-    } catch (error) {
-        showResult('botnet-result', `❌ Error: ${error.message}`, true);
-    }
-}
+    // Render chat windows immediately
+    renderChatWindows(chatCount);
+    updateChatStatuses('running', 'warn');
 
-// �🗑️ Close Specific Browser
-async function closeBrowser(username) {
+    // Disable button during run
+    startBtn().disabled = true;
+    startBtn().classList.add('loading');
+    startBtn().textContent = 'Đang chạy...';
+
     try {
-        const response = await fetch(`/api/botnet/browsers/${username}`, {
-            method: 'DELETE'
+        const [apiResults, wsResults] = await Promise.all([
+            runApiBurst(apiEndpoint, apiCount, authToken, apiMethod),
+            runWsBurst(wsEndpoint, chatCount, authToken)
+        ]);
+
+        renderApiAndWsResults(apiResults, wsResults);
+        const stats = computeStats(apiResults);
+        const wsStats = computeStats(wsResults);
+        renderSummary({
+            ...stats,
+            chatCount,
+            apiCount,
+            wsSuccess: wsStats.success,
+            wsFail: wsStats.fail,
+            wsMin: wsStats.min,
+            wsMax: wsStats.max,
+            wsAvg: wsStats.avg
         });
-        const result = await response.json();
-        
-        if (response.ok) {
-            showResult('botnet-result', `✅ Browser for ${username} closed successfully! Remaining: ${result.remaining_browsers}`);
-            // Reload browser list immediately if currently visible
-            setTimeout(refreshBrowserViewIfVisible, 1000);
-        } else {
-            showResult('botnet-result', `❌ Error closing browser: ${result.detail || 'Unknown error'}`, true);
-        }
-    } catch (error) {
-        showResult('botnet-result', `❌ Error: ${error.message}`, true);
-    }
-}
 
-// 🗑️ Close All Browsers
-async function closeAllBrowsers() {
-    const confirm = window.confirm('⚠️ Are you sure you want to close all active browser sessions?');
-    if (!confirm) return;
-    
-    try {
-        const response = await fetch('/api/botnet/browsers', {
-            method: 'DELETE'
+        updateChatStatuses('done', 'ok');
+    } catch (err) {
+        console.error(err);
+        renderSummary({
+            chatCount,
+            apiCount,
+            success: 0,
+            fail: apiCount,
+            min: 0,
+            max: 0,
+            avg: 0,
+            wsSuccess: 0,
+            wsFail: 0,
+            wsMin: 0,
+            wsMax: 0,
+            wsAvg: 0
         });
-        const result = await response.json();
-        
-        if (response.ok) {
-            showResult('botnet-result', `✅ All browsers closed successfully!`);
-            browserViewVisible = false; // Reset browser view state
-        } else {
-            showResult('botnet-result', `❌ Error closing browsers: ${result.detail || 'Unknown error'}`, true);
+        updateChatStatuses('error', 'fail');
+    } finally {
+        startBtn().disabled = false;
+        startBtn().classList.remove('loading');
+        startBtn().textContent = '🚀 Bắt đầu test';
+    }
+}
+
+function setTokenDisplay(text, isError = false) {
+    if (!tokenDisplayEl()) return;
+    tokenDisplayEl().textContent = text;
+    tokenDisplayEl().className = `token-display ${isError ? 'error' : 'ok'}`;
+    const btn = startBtn();
+    if (btn) {
+        const enabled = !isError && !!authToken;
+        btn.disabled = !enabled;
+        btn.classList.toggle('disabled', !enabled);
+    }
+}
+
+async function getToken() {
+    const endpoint = (document.getElementById('login-endpoint').value || '').trim();
+    const username = (document.getElementById('login-username').value || '').trim();
+    const password = document.getElementById('login-password').value || '';
+
+    if (!endpoint || !username || !password) {
+        setTokenDisplay('Thiếu endpoint / username / password', true);
+        return;
+    }
+
+    const btn = document.getElementById('login-btn');
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.textContent = 'Đang lấy token...';
+
+    try {
+        const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await resp.json().catch(() => ({}));
+        // cố gắng bắt nhiều key phổ biến
+        const token =
+            data.token ||
+            data.access_token ||
+            data.accessToken ||
+            data.id_token ||
+            (data.data && (data.data.token || data.data.accessToken || data.data.access_token)) ||
+            '';
+
+        if (!resp.ok || !token) {
+            setTokenDisplay(`Lấy token thất bại: ${data.message || resp.statusText || 'Unknown'}`, true);
+            authToken = '';
+            return;
         }
-    } catch (error) {
-        showResult('botnet-result', `❌ Error: ${error.message}`, true);
+
+        authToken = token;
+        setTokenDisplay(`${token}`);
+    } catch (err) {
+        setTokenDisplay(`Lỗi: ${err.message}`, true);
+        authToken = '';
+    } finally {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        btn.textContent = 'Get Token';
     }
 }
-
-function loadUsers() {
-    // Placeholder function - implement if needed
-    console.log('Loading users...');
-}
-
-// Load users on page load and initialize Bot Crawl tab
-window.onload = () => {
-    loadUsers();
-    // Ensure Bot Crawl tab is active and content is visible on page load
-    const botnetTab = document.querySelector('button[onclick*="botnet"]');
-    const botnetContent = document.getElementById('botnet');
-    if (botnetTab && botnetContent) {
-        botnetTab.classList.add('active');
-        botnetContent.classList.add('active');
-    }
-};

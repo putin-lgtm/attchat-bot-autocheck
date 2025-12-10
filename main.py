@@ -5,7 +5,7 @@ Serves both API and Static Frontend
 
 import warnings
 warnings.filterwarnings("ignore", message=".*Pydantic V1 functionality.*")
-from fastapi import FastAPI, HTTPException, status, Request
+from fastapi import FastAPI, HTTPException, status, Request, Body
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,7 @@ import uvicorn
 from pymongo import MongoClient
 from datetime import datetime
 import os
+import secrets
 from dotenv import load_dotenv
 from typing import List, Dict
 from pathlib import Path
@@ -68,6 +69,32 @@ async def health_check():
 async def api_info():
     """Get API information"""
     return {"message": "KJC Python Server API running!", "version": "2.0.0", "type": "FastAPI + Static"}
+
+@app.post("/auth/login")
+async def auth_login(payload: Dict = Body(...)):
+    """
+    Simple login stub for load-test UI.
+    Accepts username/password and returns a fake bearer token.
+    """
+    username = payload.get("username", "")
+    password = payload.get("password", "")
+
+    admin_user = os.getenv("ADMIN_USERNAME", "admin")
+    admin_pass = os.getenv("ADMIN_PASSWORD", "admin123")
+
+    if username == admin_user and password == admin_pass:
+        token = secrets.token_urlsafe(32)
+        return {
+            "success": True,
+            "token": token,
+            "accessToken": token,
+            "username": username
+        }
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials"
+    )
 
 @app.get("/api/data")
 async def get_data():
