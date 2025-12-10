@@ -6,6 +6,11 @@ const tokenDisplayEl = () => document.getElementById('token-display');
 
 let authToken = '';
 let stopRequested = false;
+
+function tail(arr, n) {
+    if (!Array.isArray(arr)) return [];
+    return arr.slice(Math.max(arr.length - n, 0));
+}
 function resetDashboard() {
     chatGridEl().innerHTML = '';
     apiResultsEl().innerHTML = '';
@@ -21,7 +26,8 @@ function resetDashboard() {
 function renderChatWindows(count) {
     const grid = chatGridEl();
     grid.innerHTML = '';
-    for (let i = 1; i <= count; i++) {
+    const start = Math.max(1, count - 9); // tail last 10
+    for (let i = start; i <= count; i++) {
         const card = document.createElement('div');
         card.className = 'chat-card';
         card.innerHTML = `
@@ -49,15 +55,19 @@ function renderResultSection(title, results) {
     wrapper.className = 'result-section';
 
     const heading = document.createElement('h4');
-    heading.textContent = title;
+    const total = results.length;
+    const limited = tail(results, 10);
+    heading.textContent = total > 10 ? `${title} (last 10 of ${total})` : title;
     wrapper.appendChild(heading);
 
-    results.forEach((r, idx) => {
+    const offset = total - limited.length;
+    limited.forEach((r, idx) => {
+        const absoluteIdx = offset + idx + 1; // 1-based index in full list
         const row = document.createElement('div');
         row.className = `api-row ${r.ok ? 'ok' : 'fail'}`;
         row.innerHTML = `
             <div class="api-row__left">
-                <strong>#${idx + 1}</strong> | ${r.status || 'ERR'} | ${r.ms.toFixed(1)} ms
+                <strong>#${absoluteIdx}</strong> | ${r.status || 'ERR'} | ${r.ms.toFixed(1)} ms
             </div>
             <div class="api-row__right">
                 ${r.ok ? '✅' : '❌'} ${r.message || ''}
@@ -77,24 +87,38 @@ function renderApiAndWsResults(apiResults, wsResults) {
 
 function renderSummary(stats) {
     summaryEl().innerHTML = `
-        <div class="stat-line">
-            <span>Chat windows:</span> <strong>${stats.chatCount}</strong>
-        </div>
-        <div class="stat-line">
-            <span>API calls:</span> <strong>${stats.apiCount}</strong>
-        </div>
-        <div class="stat-line">
-            <span>Thành công:</span> <strong>${stats.success}</strong> | Thất bại: <strong>${stats.fail}</strong>
-        </div>
-        <div class="stat-line">
-            <span>Độ trễ (ms):</span> min <strong>${stats.min.toFixed(1)}</strong> / avg <strong>${stats.avg.toFixed(1)}</strong> / max <strong>${stats.max.toFixed(1)}</strong>
-        </div>
-        <div class="stat-line">
-            <span>WS thành công / thất bại:</span> <strong>${stats.wsSuccess}</strong> / <strong>${stats.wsFail}</strong>
-        </div>
-        <div class="stat-line">
-            <span>WS latency (ms):</span> min <strong>${stats.wsMin.toFixed(1)}</strong> / avg <strong>${stats.wsAvg.toFixed(1)}</strong> / max <strong>${stats.wsMax.toFixed(1)}</strong>
-        </div>
+        <table class="summary-table">
+            <tbody>
+                <tr>
+                    <td>Chat windows</td>
+                    <td><strong>${stats.chatCount}</strong></td>
+                </tr>
+                <tr>
+                    <td>API calls</td>
+                    <td><strong>${stats.apiCount}</strong></td>
+                </tr>
+                <tr>
+                    <td>Thành công / Thất bại</td>
+                    <td><strong>${stats.success}</strong> / <strong>${stats.fail}</strong></td>
+                </tr>
+                <tr>
+                    <td>API latency (ms)</td>
+                    <td>min <strong>${stats.min.toFixed(1)} ms</strong> / avg <strong>${stats.avg.toFixed(1)} ms</strong> / max <strong>${stats.max.toFixed(1)} ms</strong></td>
+                </tr>
+                <tr>
+                    <td>WS thành công / thất bại</td>
+                    <td><strong>${stats.wsSuccess}</strong> / <strong>${stats.wsFail}</strong></td>
+                </tr>
+                <tr>
+                    <td>WS latency (ms)</td>
+                    <td>min <strong>${stats.wsMin.toFixed(1)} ms</strong> / avg <strong>${stats.wsAvg.toFixed(1)} ms</strong> / max <strong>${stats.wsMax.toFixed(1)} ms</strong></td>
+                </tr>
+                <tr>
+                    <td>Total latency (s)</td>
+                    <td><strong>${(stats.totalSecs || 0).toFixed(2)} s</strong></td>
+                </tr>
+            </tbody>
+        </table>
     `;
 }
 
@@ -166,6 +190,13 @@ async function runWsBurst(endpoint, amount, token) {
     return Promise.all(tasks);
 }
 
+async function runChatSession(wsEndpoint, apiEndpoint, apiCount, token, apiMethod) {
+    const wsPromise = runWsBurst(wsEndpoint, 1, token).then((arr) => arr[0] || null);
+    const apiPromise = runApiBurst(apiEndpoint, apiCount, token, apiMethod);
+    const [wsResult, apiResults] = await Promise.all([wsPromise, apiPromise]);
+    return { wsResult, apiResults };
+}
+
 function computeStats(apiResults) {
     if (!apiResults.length) {
         return { success: 0, fail: 0, min: 0, max: 0, avg: 0 };
@@ -197,6 +228,8 @@ async function startLoadTest() {
     const apiEndpoint = (document.getElementById('api-endpoint').value || '').trim() || '/api/data';
     const apiMethod = (document.getElementById('api-method').value || 'GET').toUpperCase();
     const wsEndpoint = (document.getElementById('ws-endpoint').value || '').trim() || 'wss://echo.websocket.events/';
+    const totalApiPlanned = chatCount * apiCount;
+    const startedAt = performance.now();
 
     // Render chat windows immediately
     renderChatWindows(chatCount);
@@ -208,18 +241,29 @@ async function startLoadTest() {
     startBtn().textContent = 'Đang chạy...';
 
     try {
-        const [apiResults, wsResults] = await Promise.all([
-            runApiBurst(apiEndpoint, apiCount, authToken, apiMethod),
-            runWsBurst(wsEndpoint, chatCount, authToken)
-        ]);
+        // Per-chat: mỗi chat mở WS và tự bắn apiCount API
+        const chatTasks = [];
+        for (let i = 0; i < chatCount; i++) {
+            chatTasks.push(runChatSession(wsEndpoint, apiEndpoint, apiCount, authToken, apiMethod));
+        }
+        const chatResults = await Promise.all(chatTasks);
 
-        renderApiAndWsResults(apiResults, wsResults);
-        const stats = computeStats(apiResults);
-        const wsStats = computeStats(wsResults);
+        const allApiResults = [];
+        const allWsResults = [];
+        chatResults.forEach(({ wsResult, apiResults }) => {
+            if (wsResult) allWsResults.push(wsResult);
+            if (Array.isArray(apiResults)) allApiResults.push(...apiResults);
+        });
+
+        renderApiAndWsResults(allApiResults, allWsResults);
+        const stats = computeStats(allApiResults);
+        const wsStats = computeStats(allWsResults);
+        const totalSecs = (performance.now() - startedAt) / 1000;
         renderSummary({
             ...stats,
             chatCount,
-            apiCount,
+            apiCount: allApiResults.length, // tổng API thực sự đã bắn
+            totalSecs,
             wsSuccess: wsStats.success,
             wsFail: wsStats.fail,
             wsMin: wsStats.min,
@@ -230,14 +274,16 @@ async function startLoadTest() {
         updateChatStatuses('done', 'ok');
     } catch (err) {
         console.error(err);
+        const totalSecs = (performance.now() - startedAt) / 1000;
         renderSummary({
             chatCount,
-            apiCount,
+            apiCount: totalApiPlanned,
             success: 0,
-            fail: apiCount,
+            fail: totalApiPlanned,
             min: 0,
             max: 0,
             avg: 0,
+            totalSecs,
             wsSuccess: 0,
             wsFail: 0,
             wsMin: 0,

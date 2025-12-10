@@ -229,6 +229,30 @@ body {
     margin-bottom: 6px;
 }
 
+.summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.summary-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #eee;
+}
+
+.summary-table tr:last-child td {
+    border-bottom: none;
+}
+
+.summary-table td:first-child {
+    color: #555;
+}
+
+.summary-table td:last-child {
+    text-align: right;
+    font-weight: 600;
+}
+
 .grid-title {
     display: flex;
     justify-content: space-between;
@@ -237,9 +261,9 @@ body {
 }
 
 .chat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     margin-bottom: 20px;
 }
 
@@ -249,6 +273,7 @@ body {
     padding: 10px;
     background: #fafafa;
     box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    width: 50%;
 }
 
 .chat-card__header {
