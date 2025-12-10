@@ -6,31 +6,24 @@
     <title>{% if title %}{{ title }} - {% endif %}KJC Testing API</title>
     
     <!-- CSS Files -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="/static/css/style.css">
     {% block extra_css %}{% endblock %}
 </head>
 <body>
     <div class="container">
         <!-- Header -->
         <header class="header">
-            <h1>🚀 {{ title or 'KJC Testing API Event' }}</h1>
+            <h1>🚀 {{ title or 'ATTChat Load Test By K6' }}</h1>
             <nav class="nav">
-                <a href="{{ url_for('main.index') }}" class="nav-link">Home</a>
-                <a href="{{ url_for('users.index') }}" class="nav-link">Users</a>
-                <a href="{{ url_for('botnet.index') }}" class="nav-link">Botnet</a>
+                <a href="/" class="nav-link">Home</a>
+                <a href="/users/" class="nav-link">Users</a>
+                <a href="/botnet/" class="nav-link">Botnet</a>
+                <a href="/k6" class="nav-link">K6 Load Test</a>
             </nav>
         </header>
 
         <!-- Flash Messages -->
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                <div class="messages">
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">{{ message }}</div>
-                    {% endfor %}
-                </div>
-            {% endif %}
-        {% endwith %}
+        <!-- Disabled for FastAPI - no flash messages -->
 
         <!-- Main Content -->
         <main class="main-content">
@@ -39,7 +32,7 @@
 
         <!-- Footer -->
         <footer class="footer">
-            <p><em>KJC Testing API - Flask MVC Architecture</em></p>
+            <p><em>ATTChat Testing API - Flask MVC Architecture</em></p>
         </footer>
     </div>
 
@@ -47,11 +40,10 @@
     <script>
         // Global config accessible to all JS files
         window.APP_CONFIG = {
-            API_BASE_URL: '{{ config.API_BASE_URL }}',
-            CSRF_TOKEN: '{{ csrf_token() }}'
+            API_BASE_URL: '/api',
+            CSRF_TOKEN: ''
         };
     </script>
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

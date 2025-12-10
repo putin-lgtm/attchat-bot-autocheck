@@ -15,10 +15,16 @@ import uvicorn
 from pymongo import MongoClient
 from datetime import datetime
 import os
+import subprocess
+import shlex
+import shutil
 import secrets
 from dotenv import load_dotenv
 from typing import List, Dict
 from pathlib import Path
+
+# Track current k6 process
+current_k6_proc = None
 
 # Load environment variables
 load_dotenv()
@@ -64,11 +70,106 @@ async def health_check():
     """API Health check"""
     return {"status": "healthy", "server": "FastAPI + Static Frontend"}
 
+@app.get("/k6", response_class=HTMLResponse)
+async def k6_page(request: Request):
+    """Serve k6 config UI"""
+    return templates.TemplateResponse("k6_interface.html", {"request": request})
+
 # Additional API Routes
 @app.get("/api/info")
 async def api_info():
     """Get API information"""
     return {"message": "KJC Python Server API running!", "version": "2.0.0", "type": "FastAPI + Static"}
+
+
+@app.post("/api/run-k6", response_class=JSONResponse)
+async def run_k6(payload: Dict = Body(None)):
+    """
+    Launch a k6 run as a subprocess. Requires k6 installed on host.
+    Returns pid and dashboard URL (web-dashboard).
+    """
+    global current_k6_proc
+    # Resolve k6 binary
+    k6_bin_opt = os.getenv("K6_BIN", "")
+    bin_candidates = []
+    if k6_bin_opt:
+        bin_candidates.append(k6_bin_opt)
+    # common Windows install paths
+    bin_candidates.extend([
+        shutil.which("k6") or "k6",
+        r"C:\Program Files\k6\k6.exe",
+        r"C:\ProgramData\chocolatey\bin\k6.exe",
+    ])
+    k6_bin = next((p for p in bin_candidates if p and os.path.exists(p)), None)
+    if not k6_bin:
+        raise HTTPException(
+            status_code=400,
+            detail="k6 binary not found. Install k6 or set K6_BIN (e.g. C:\\Program Files\\k6\\k6.exe).",
+        )
+
+    chat_count = str(payload.get("chat_count", os.getenv("CHAT_COUNT", "10")))
+    api_per_chat = str(payload.get("api_per_chat", os.getenv("API_PER_CHAT", "3")))
+    max_duration = str(payload.get("max_duration", os.getenv("MAX_DURATION", "2m")))
+    login_url = payload.get("login_url", os.getenv("LOGIN_URL", "http://localhost:8083/api/auth/login"))
+    api_url = payload.get("api_url", os.getenv("API_URL", "http://localhost:8083/api/data-botting"))
+    ws_url = payload.get("ws_url", os.getenv("WS_URL", "ws://localhost:8086/ws"))
+    username = payload.get("username", os.getenv("USERNAME", "admin"))
+    password = payload.get("password", os.getenv("PASSWORD", "admin123"))
+    out_mode = payload.get("out_mode", "web-dashboard")
+    k6_path = "./k6_load_test.js"
+
+    # Build command
+    cmd = [
+        k6_bin, "run", "--linger",
+        "--out", out_mode,
+        "-e", f"CHAT_COUNT={chat_count}",
+        "-e", f"API_PER_CHAT={api_per_chat}",
+        "-e", f"MAX_DURATION={max_duration}",
+        "-e", f"LOGIN_URL={login_url}",
+        "-e", f"API_URL={api_url}",
+        "-e", f"WS_URL={ws_url}",
+    ]
+    cmd_display = [
+        "k6", "run", "--linger",
+        "--out", out_mode,
+        "-e", f"CHAT_COUNT={chat_count}",
+        "-e", f"API_PER_CHAT={api_per_chat}",
+        "-e", f"MAX_DURATION={max_duration}",
+        "-e", f"LOGIN_URL={login_url}",
+        "-e", f"API_URL={api_url}",
+        "-e", f"WS_URL={ws_url}",
+    ]
+    cmd += ["-e", f"USERNAME={username}", "-e", f"PASSWORD={password}"]
+    cmd_display += ["-e", f"USERNAME={username}", "-e", f"PASSWORD={password}"]
+
+    cmd.append(k6_path)
+    cmd_display.append(k6_path)
+
+    # Kill existing job if running
+    if current_k6_proc and current_k6_proc.poll() is None:
+        try:
+            current_k6_proc.terminate()
+            current_k6_proc.wait(timeout=5)
+        except Exception:
+            try:
+                current_k6_proc.kill()
+            except Exception:
+                pass
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        current_k6_proc = proc
+    except FileNotFoundError:
+        raise HTTPException(status_code=400, detail="k6 binary not found or not executable.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start k6: {e}")
+
+    return {
+        "pid": proc.pid,
+        "cmd": " ".join(shlex.quote(c) for c in cmd_display),
+        "dashboard": "http://127.0.0.1:5665",
+        "note": "Dashboard available while process is running (lingers after run).",
+    }
 
 @app.post("/auth/login")
 async def auth_login(payload: Dict = Body(...)):

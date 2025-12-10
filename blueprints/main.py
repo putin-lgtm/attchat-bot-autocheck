@@ -10,3 +10,8 @@ def index():
 @bp.route('/about')
 def about():
     return render_template('about.html', title='About')
+
+
+@bp.route('/k6')
+def k6():
+    return render_template('k6_interface.html', title='k6 Load Test')

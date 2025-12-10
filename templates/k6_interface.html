@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h3>k6 + web-dashboard</h3>
+    <p>Nhập tham số và nhấn Bắt đầu test để server gọi k6 (WS + API burst per chat). Khi chạy xong, mở dashboard để xem kết quả.</p>
+
+    <form id="k6-form" class="form-grid">
+        <div class="form-group--inline form-group">
+            <label for="chat_count">Chat count (CHAT_COUNT)</label>
+            <input type="number" id="chat_count" value="10" min="1">
+        </div>
+        <div class="form-group--inline form-group">
+            <label for="api_per_chat">API per chat (API_PER_CHAT)</label>
+            <input type="number" id="api_per_chat" value="3" min="1">
+        </div>
+        <div class="form-group--inline form-group">
+            <label for="max_duration">Max duration (MAX_DURATION)</label>
+            <input type="text" id="max_duration" value="2m">
+        </div>
+        <div class="form-group">
+            <label for="login_url">LOGIN_URL</label>
+            <input type="text" id="login_url" value="http://localhost:8083/api/auth/login">
+        </div>
+        <div class="form-group">
+            <label for="api_url">API_URL</label>
+            <input type="text" id="api_url" value="http://localhost:8083/api/data-botting">
+        </div>
+        <div class="form-group">
+            <label for="ws_url">WS_URL</label>
+            <input type="text" id="ws_url" value="ws://localhost:8086/ws">
+        </div>
+        <div class="form-group--inline form-group">
+            <label for="username">USERNAME</label>
+            <input type="text" id="username" value="admin">
+        </div>
+        <div class="form-group--inline form-group">
+            <label for="password">PASSWORD</label>
+            <input type="password" id="password" value="admin123">
+        </div>
+        <div class="form-group">
+            <label for="out_mode">Output</label>
+            <select id="out_mode">
+                <option value="web-dashboard" selected>--out web-dashboard (built-in)</option>
+                <option value="json=results.json">--out json=results.json</option>
+            </select>
+        </div>
+        <div class="actions">
+            <button type="submit" class="btn" id="run-btn">Bắt đầu test</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h4>Kết quả / Dashboard</h4>
+    <div id="k6-result" class="hint">Chưa chạy.</div>
+    <textarea id="k6-command" readonly rows="4" class="wide-textarea" placeholder="Lệnh k6 đã dùng sẽ hiển thị tại đây"></textarea>
+    <p class="hint">Nếu thấy link dashboard (http://127.0.0.1:5665), click để mở. Dashboard sống khi tiến trình k6 còn chạy (có --linger).</p>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/k6_interface.js"></script>
+{% endblock %}
