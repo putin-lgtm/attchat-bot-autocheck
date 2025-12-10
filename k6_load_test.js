@@ -128,6 +128,7 @@ function appendToken(url, token) {
 }
 
 export function handleSummary(data) {
-  // Useful when not using xk6-dashboard; writes summary.json locally.
-  return { 'summary.json': JSON.stringify(data, null, 2) };
+  // Write summary into configured path (default: static/summary.json).
+  const path = __ENV.SUMMARY_PATH || 'static/summary.json';
+  return { [path]: JSON.stringify(data, null, 2) };
 }

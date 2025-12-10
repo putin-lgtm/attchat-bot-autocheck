@@ -168,6 +168,16 @@ body {
     background: #5a6268;
 }
 
+.btn-warning {
+    background: #ffc107;
+    color: #212529;
+}
+
+.btn-warning:hover {
+    background: #e0a800;
+    color: #212529;
+}
+
 .btn:disabled {
     background: #6c757d;
     cursor: not-allowed;
@@ -263,6 +273,10 @@ body {
 .summary-table td:last-child {
     text-align: right;
     font-weight: 600;
+}
+
+.stats-card table {
+    width: 100%;
 }
 
 .grid-title {

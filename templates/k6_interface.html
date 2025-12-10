@@ -7,15 +7,23 @@
 
     <form id="k6-form" class="form-grid">
         <div class="form-group--inline form-group">
-            <label for="chat_count">Chat count (CHAT_COUNT)</label>
+            <label for="username">USERNAME</label>
+            <input type="text" id="username" value="admin">
+        </div>
+        <div class="form-group--inline form-group">
+            <label for="password">PASSWORD</label>
+            <input type="password" id="password" value="admin123">
+        </div>
+        <div class="form-group--inline form-group">
+            <label for="chat_count">Chat count</label>
             <input type="number" id="chat_count" value="10" min="1">
         </div>
         <div class="form-group--inline form-group">
-            <label for="api_per_chat">API per chat (API_PER_CHAT)</label>
+            <label for="api_per_chat">API per chat</label>
             <input type="number" id="api_per_chat" value="3" min="1">
         </div>
         <div class="form-group--inline form-group">
-            <label for="max_duration">Max duration (MAX_DURATION)</label>
+            <label for="max_duration">Max duration</label>
             <input type="text" id="max_duration" value="2m">
         </div>
         <div class="form-group">
@@ -30,14 +38,6 @@
             <label for="ws_url">WS_URL</label>
             <input type="text" id="ws_url" value="ws://localhost:8086/ws">
         </div>
-        <div class="form-group--inline form-group">
-            <label for="username">USERNAME</label>
-            <input type="text" id="username" value="admin">
-        </div>
-        <div class="form-group--inline form-group">
-            <label for="password">PASSWORD</label>
-            <input type="password" id="password" value="admin123">
-        </div>
         <div class="form-group">
             <label for="out_mode">Output</label>
             <select id="out_mode">
@@ -46,9 +46,28 @@
             </select>
         </div>
         <div class="actions">
-            <button type="submit" class="btn" id="run-btn">Bắt đầu test</button>
+            <button type="submit" class="btn" id="run-btn">Test nhanh</button>
+            <button type="button" class="btn btn-warning" id="dash-btn">Report to Dashboard</button>
         </div>
     </form>
+</div>
+
+<div class="card">
+    <h4>Kết quả nhanh</h4>
+    <div id="k6-summary" class="stats-card">
+        <table class="summary-table">
+            <tbody>
+                <tr><td>Chat windows</td><td><strong>–</strong></td></tr>
+                <tr><td>API calls</td><td><strong>–</strong></td></tr>
+                <tr><td>Thành công / Thất bại</td><td><strong>–</strong> / <strong>–</strong></td></tr>
+                <tr><td>API latency (ms)</td><td>min <strong>–</strong> / avg <strong>–</strong> / max <strong>–</strong></td></tr>
+                <tr><td>WS thành công / thất bại</td><td><strong>–</strong> / <strong>–</strong></td></tr>
+                <tr><td>WS latency (ms)</td><td>min <strong>–</strong> / avg <strong>–</strong> / max <strong>–</strong></td></tr>
+                <tr><td>Total latency (s)</td><td><strong>–</strong></td></tr>
+            </tbody>
+        </table>
+        <p class="hint">Xem số liệu realtime tại dashboard k6 (127.0.0.1:5665) khi test đang chạy.</p>
+    </div>
 </div>
 
 <div class="card">

@@ -19,6 +19,7 @@ import subprocess
 import shlex
 import shutil
 import secrets
+import json
 from dotenv import load_dotenv
 from typing import List, Dict
 from pathlib import Path
@@ -116,11 +117,16 @@ async def run_k6(payload: Dict = Body(None)):
     username = payload.get("username", os.getenv("USERNAME", "admin"))
     password = payload.get("password", os.getenv("PASSWORD", "admin123"))
     out_mode = payload.get("out_mode", "web-dashboard")
-    k6_path = "./k6_load_test.js"
+    linger = bool(payload.get("linger", False))
+    base_dir = settings.BASE_DIR
+    k6_path = str(base_dir / "k6_load_test.js")
+    # Use a relative path for k6 to write summary to static/summary.json
+    summary_rel = "static/summary.json"
+    summary_abs = settings.BASE_DIR / summary_rel
 
     # Build command
     cmd = [
-        k6_bin, "run", "--linger",
+        k6_bin, "run",
         "--out", out_mode,
         "-e", f"CHAT_COUNT={chat_count}",
         "-e", f"API_PER_CHAT={api_per_chat}",
@@ -128,9 +134,10 @@ async def run_k6(payload: Dict = Body(None)):
         "-e", f"LOGIN_URL={login_url}",
         "-e", f"API_URL={api_url}",
         "-e", f"WS_URL={ws_url}",
+        "-e", f"SUMMARY_PATH={summary_rel}",
     ]
     cmd_display = [
-        "k6", "run", "--linger",
+        "k6", "run",
         "--out", out_mode,
         "-e", f"CHAT_COUNT={chat_count}",
         "-e", f"API_PER_CHAT={api_per_chat}",
@@ -138,12 +145,16 @@ async def run_k6(payload: Dict = Body(None)):
         "-e", f"LOGIN_URL={login_url}",
         "-e", f"API_URL={api_url}",
         "-e", f"WS_URL={ws_url}",
+        "-e", f"SUMMARY_PATH={summary_rel}",
     ]
+    if linger:
+        cmd.insert(2, "--linger")
+        cmd_display.insert(2, "--linger")
     cmd += ["-e", f"USERNAME={username}", "-e", f"PASSWORD={password}"]
     cmd_display += ["-e", f"USERNAME={username}", "-e", f"PASSWORD={password}"]
 
     cmd.append(k6_path)
-    cmd_display.append(k6_path)
+    cmd_display.append("k6_load_test.js")
 
     # Kill existing job if running
     if current_k6_proc and current_k6_proc.poll() is None:
@@ -156,8 +167,21 @@ async def run_k6(payload: Dict = Body(None)):
             except Exception:
                 pass
 
+    # Reset summary file to avoid stale data while new run executes
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        summary_abs.parent.mkdir(parents=True, exist_ok=True)
+        summary_abs.write_text('{"status":"waiting"}', encoding="utf-8")
+    except Exception:
+        pass
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(base_dir),
+        )
         current_k6_proc = proc
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail="k6 binary not found or not executable.")
@@ -168,7 +192,7 @@ async def run_k6(payload: Dict = Body(None)):
         "pid": proc.pid,
         "cmd": " ".join(shlex.quote(c) for c in cmd_display),
         "dashboard": "http://127.0.0.1:5665",
-        "note": "Dashboard available while process is running (lingers after run).",
+        "note": "Dashboard available while the test is running." + (" (linger enabled)" if linger else ""),
     }
 
 @app.post("/auth/login")
