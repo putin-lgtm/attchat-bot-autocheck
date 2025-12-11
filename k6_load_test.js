@@ -12,7 +12,7 @@ const wsUrlBase = __ENV.WS_URL || 'ws://localhost:8086/ws';
 const username = __ENV.USERNAME || 'admin';
 const password = __ENV.PASSWORD || 'admin123';
 const providedToken = __ENV.TOKEN; // If set, skip login.
-const wsLingerMs = parseDurationMs(__ENV.WS_LINGER_MS || __ENV.MAX_DURATION || '0'); // keep WS open; default to MAX_DURATION if set
+const wsLingerMs = parseDurationMs(__ENV.MAX_DURATION || __ENV.WS_LINGER_MS || '0'); // keep WS open equal to MAX_DURATION by default
 const wsHardTimeoutMs = parseDurationMs(__ENV.WS_HARD_TIMEOUT_MS || '5000'); // force-close guard
 
 // Metrics
@@ -75,23 +75,19 @@ export default function (data) {
     ]);
   }
 
-  // Run WS connect and API burst in parallel (best-effort)
-  const wsPromise = connectWs(token);
-  const apiPromise = doApiBurst(requests);
-
-  // Wait both
-  wsPromise();
-  apiPromise();
-
-  sleep(1); // small think-time to let k6 pacing
+  // Run WS and API concurrently within the same VU
+  const wsRun = doWsBurst(token);
+  const apiRun = doApiBurst(requests);
+  wsRun();
+  apiRun();
 }
 
-function connectWs(token) {
+function doWsBurst(token) {
   return () => {
     const started = Date.now();
     const url = appendToken(wsUrlBase, token);
     const guardMs = wsHardTimeoutMs || 0;
-    console.log('WS opened', url);
+    console.log(`VU ${__VU} WS opened ${url}`);
     const res = ws.connect(url, {}, (socket) => {
       let closed = false;
 
@@ -106,7 +102,7 @@ function connectWs(token) {
             }
           }, wsLingerMs);
         } else {
-          socket.close();
+        socket.close();
           closed = true;
           wsClosed.add(1);
         }
@@ -114,18 +110,17 @@ function connectWs(token) {
       socket.on('error', () => {
         wsErrors.add(1);
         if (!closed) {
-          socket.close();
+        socket.close();
           closed = true;
           wsClosed.add(1);
         }
         console.log('WS error on connect', url);
-      });
+    });
       socket.on('close', () => {
         if (!closed) {
           wsClosed.add(1);
           closed = true;
         }
-        console.log('WS closed', url);
       });
 
       // Hard guard to ensure closure even if events fail
@@ -148,7 +143,7 @@ function connectWs(token) {
 
 function doApiBurst(requests) {
   return () => {
-    console.log('API opened', requests.length, 'calls');
+    console.log(`VU ${__VU} API opened ${requests.length} calls`);
     const responses = http.batch(requests);
     responses.forEach((r) => {
       apiLatency.add(r.timings.duration);
