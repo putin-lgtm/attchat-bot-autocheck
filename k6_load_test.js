@@ -13,12 +13,14 @@ const username = __ENV.USERNAME || 'admin';
 const password = __ENV.PASSWORD || 'admin123';
 const providedToken = __ENV.TOKEN; // If set, skip login.
 const wsLingerMs = parseDurationMs(__ENV.WS_LINGER_MS || __ENV.MAX_DURATION || '0'); // keep WS open; default to MAX_DURATION if set
+const wsHardTimeoutMs = parseDurationMs(__ENV.WS_HARD_TIMEOUT_MS || '5000'); // force-close guard
 
 // Metrics
 const apiLatency = new Trend('api_latency_ms');
 const wsConnectLatency = new Trend('ws_connect_latency_ms');
 const apiErrors = new Counter('api_errors');
 const wsErrors = new Counter('ws_errors');
+const wsClosed = new Counter('ws_closed');
 
 export const options = {
   scenarios: {
@@ -88,29 +90,65 @@ function connectWs(token) {
   return () => {
     const started = Date.now();
     const url = appendToken(wsUrlBase, token);
+    const guardMs = wsHardTimeoutMs || 0;
+    console.log('WS opened', url);
     const res = ws.connect(url, {}, (socket) => {
+      let closed = false;
+
       socket.on('open', () => {
         wsConnectLatency.add(Date.now() - started);
         if (wsLingerMs > 0) {
-          socket.setTimeout(() => socket.close(), wsLingerMs);
+          socket.setTimeout(() => {
+            if (!closed) {
+              socket.close();
+              closed = true;
+              wsClosed.add(1);
+            }
+          }, wsLingerMs);
         } else {
           socket.close();
+          closed = true;
+          wsClosed.add(1);
         }
       });
       socket.on('error', () => {
         wsErrors.add(1);
-        socket.close();
+        if (!closed) {
+          socket.close();
+          closed = true;
+          wsClosed.add(1);
+        }
+        console.log('WS error on connect', url);
       });
+      socket.on('close', () => {
+        if (!closed) {
+          wsClosed.add(1);
+          closed = true;
+        }
+        console.log('WS closed', url);
+      });
+
+      // Hard guard to ensure closure even if events fail
+      socket.setTimeout(() => {
+        if (!closed) {
+          socket.close();
+          closed = true;
+          wsClosed.add(1);
+          console.log('WS hard-timeout close', url);
+        }
+      }, guardMs);
     });
-    check(res, { 'ws status 101': (r) => r && r.status === 101 });
-    if (!res || res.status !== 101) {
+    const ok = check(res, { 'ws status 101': (r) => r && r.status === 101 });
+    if (!ok) {
       wsErrors.add(1);
+      console.log('WS upgrade failed', url, res && res.error || res);
     }
   };
 }
 
 function doApiBurst(requests) {
   return () => {
+    console.log('API opened', requests.length, 'calls');
     const responses = http.batch(requests);
     responses.forEach((r) => {
       apiLatency.add(r.timings.duration);
