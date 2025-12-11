@@ -16,6 +16,7 @@ from pymongo import MongoClient
 from datetime import datetime
 import os
 import subprocess
+import threading
 import shlex
 import shutil
 import secrets
@@ -181,7 +182,7 @@ async def run_k6(payload: Dict = Body(None)):
     try:
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # avoid pipe blocking when k6 writes logs
             stderr=subprocess.STDOUT,
             text=True,
             cwd=str(base_dir),
@@ -192,12 +193,55 @@ async def run_k6(payload: Dict = Body(None)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start k6: {e}")
 
+    # Guard: kill k6 if it exceeds declared max_duration (plus small buffer)
+    def _kill_late(p: subprocess.Popen, guard_seconds: float):
+        try:
+            p.wait(timeout=guard_seconds)
+        except subprocess.TimeoutExpired:
+            try:
+                p.terminate()
+                p.wait(timeout=3)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+
+    guard_seconds = max(parse_duration_seconds(max_duration) + 5, 10)  # at least 10s
+    threading.Thread(target=_kill_late, args=(proc, guard_seconds), daemon=True).start()
+
     return {
         "pid": proc.pid,
         "cmd": " ".join(shlex.quote(c) for c in cmd_display),
         "dashboard": "http://127.0.0.1:5665",
         "note": "Dashboard available while the test is running." + (" (linger enabled)" if linger else ""),
     }
+
+
+def parse_duration_seconds(value: str) -> float:
+    """Parse duration string with units ms, s, m, h. Default seconds if no unit."""
+    if not value:
+        return 0
+    s = str(value).strip()
+    try:
+        # simple number -> seconds
+        return float(s)
+    except Exception:
+        pass
+    num = ""
+    unit = ""
+    for ch in s:
+        if (ch.isdigit() or ch == ".") and unit == "":
+            num += ch
+        else:
+            unit += ch
+    try:
+        n = float(num)
+    except Exception:
+        return 0
+    unit = unit.lower().strip() or "s"
+    factor = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}.get(unit, 1)
+    return n * factor
 
 @app.post("/auth/login")
 async def auth_login(payload: Dict = Body(...)):
