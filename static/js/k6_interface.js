@@ -7,6 +7,7 @@ function buildPayload() {
         chat_count: $('chat_count').value || '10',
         api_per_chat: $('api_per_chat').value || '3',
         max_duration: $('max_duration').value || '2m',
+        ws_linger_ms: $('max_duration').value || '2m', // reuse max_duration for WS linger
         login_url: $('login_url').value || '',
         api_url: $('api_url').value || '',
         ws_url: $('ws_url').value || '',

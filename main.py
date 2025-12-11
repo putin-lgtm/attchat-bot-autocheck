@@ -118,6 +118,7 @@ async def run_k6(payload: Dict = Body(None)):
     password = payload.get("password", os.getenv("PASSWORD", "admin123"))
     out_mode = payload.get("out_mode", "web-dashboard")
     linger = bool(payload.get("linger", False))
+    ws_linger_ms = str(payload.get("ws_linger_ms", os.getenv("WS_LINGER_MS", "")))
     base_dir = settings.BASE_DIR
     k6_path = str(base_dir / "k6_load_test.js")
     # Use a relative path for k6 to write summary to static/summary.json
@@ -147,6 +148,9 @@ async def run_k6(payload: Dict = Body(None)):
         "-e", f"WS_URL={ws_url}",
         "-e", f"SUMMARY_PATH={summary_rel}",
     ]
+    if ws_linger_ms:
+        cmd += ["-e", f"WS_LINGER_MS={ws_linger_ms}"]
+        cmd_display += ["-e", f"WS_LINGER_MS={ws_linger_ms}"]
     if linger:
         cmd.insert(2, "--linger")
         cmd_display.insert(2, "--linger")

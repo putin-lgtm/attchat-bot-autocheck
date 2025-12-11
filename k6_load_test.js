@@ -12,6 +12,7 @@ const wsUrlBase = __ENV.WS_URL || 'ws://localhost:8086/ws';
 const username = __ENV.USERNAME || 'admin';
 const password = __ENV.PASSWORD || 'admin123';
 const providedToken = __ENV.TOKEN; // If set, skip login.
+const wsLingerMs = parseDurationMs(__ENV.WS_LINGER_MS || __ENV.MAX_DURATION || '0'); // keep WS open; default to MAX_DURATION if set
 
 // Metrics
 const apiLatency = new Trend('api_latency_ms');
@@ -90,7 +91,11 @@ function connectWs(token) {
     const res = ws.connect(url, {}, (socket) => {
       socket.on('open', () => {
         wsConnectLatency.add(Date.now() - started);
-        socket.close();
+        if (wsLingerMs > 0) {
+          socket.setTimeout(() => socket.close(), wsLingerMs);
+        } else {
+          socket.close();
+        }
       });
       socket.on('error', () => {
         wsErrors.add(1);
@@ -131,4 +136,20 @@ export function handleSummary(data) {
   // Write summary into configured path (default: static/summary.json).
   const path = __ENV.SUMMARY_PATH || 'static/summary.json';
   return { [path]: JSON.stringify(data, null, 2) };
+}
+
+function parseDurationMs(v) {
+  if (typeof v === 'number') return v;
+  if (!v) return 0;
+  const s = v.toString().trim();
+  if (!s) return 0;
+  const m = s.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/i);
+  if (!m) {
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
+  }
+  const n = parseFloat(m[1]);
+  const unit = (m[2] || 's').toLowerCase();
+  const factor = unit === 'ms' ? 1 : unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 1_000;
+  return n * factor;
 }
