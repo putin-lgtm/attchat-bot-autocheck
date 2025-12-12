@@ -8,12 +8,24 @@ const chatCount = Number(__ENV.CHAT_COUNT || 10);
 const apiPerChat = Number(__ENV.API_PER_CHAT || 3);
 const loginUrl = __ENV.LOGIN_URL || 'http://localhost:8083/api/auth/login';
 const apiUrl = __ENV.API_URL || 'http://localhost:8083/api/data-botting';
-const wsUrlBase = __ENV.WS_URL || 'ws://localhost:8086/ws';
+const publishUrl = __ENV.PUBLISH_URL || 'http://localhost:8083/api/publish-chat-event';
 const username = __ENV.USERNAME || 'admin';
 const password = __ENV.PASSWORD || 'admin123';
 const providedToken = __ENV.TOKEN; // If set, skip login.
 const wsLingerMs = parseDurationMs(__ENV.MAX_DURATION || __ENV.WS_LINGER_MS || '0'); // keep WS open equal to MAX_DURATION by default
 const wsHardTimeoutMs = parseDurationMs(__ENV.WS_HARD_TIMEOUT_MS || '5000'); // force-close guard
+const brandIds = Array.from({ length: 10 }, (_, i) => `${i + 1}`);
+const streamTypes = [
+  'ANALYTICS',
+  'AUDIT',
+  'BILLING',
+  'CHAT',
+  'EMAIL',
+  'FILE',
+  'NOTIFY',
+  'ONLINE',
+];
+const userIds = Array.from({ length: chatCount }, (_, i) => `${i + 1}`);
 
 // Metrics
 const apiLatency = new Trend('api_latency_ms');
@@ -85,58 +97,35 @@ export default function (data) {
 function doWsBurst(token) {
   return () => {
     const started = Date.now();
-    const url = appendToken(wsUrlBase, token);
-    const guardMs = wsHardTimeoutMs || 0;
-    console.log(`VU ${__VU} WS opened ${url}`);
-    const res = ws.connect(url, {}, (socket) => {
-      let closed = false;
-
-      socket.on('open', () => {
-        wsConnectLatency.add(Date.now() - started);
-        if (wsLingerMs > 0) {
-          socket.setTimeout(() => {
-            if (!closed) {
-              socket.close();
-              closed = true;
-              wsClosed.add(1);
-            }
-          }, wsLingerMs);
-        } else {
-        socket.close();
-          closed = true;
-          wsClosed.add(1);
-        }
-      });
-      socket.on('error', () => {
-        wsErrors.add(1);
-        if (!closed) {
-        socket.close();
-          closed = true;
-          wsClosed.add(1);
-        }
-        console.log('WS error on connect', url);
-    });
-      socket.on('close', () => {
-        if (!closed) {
-          wsClosed.add(1);
-          closed = true;
-        }
-      });
-
-      // Hard guard to ensure closure even if events fail
-      socket.setTimeout(() => {
-        if (!closed) {
-          socket.close();
-          closed = true;
-          wsClosed.add(1);
-          console.log('WS hard-timeout close', url);
-        }
-      }, guardMs);
-    });
-    const ok = check(res, { 'ws status 101': (r) => r && r.status === 101 });
+    const userId = userIds[(__VU - 1) % userIds.length];
+    const brandId = brandIds[Math.floor(Math.random() * brandIds.length)];
+    const streamType = streamTypes[Math.floor(Math.random() * streamTypes.length)];
+    const tokenShort = token ? `${String(token).slice(0, 12)}...` : '';
+    const payload = {
+      event: 'load_test_connect',
+      type: streamType,
+      brand_id: brandId,
+      user_id: userId,
+      room_id: `room_user_${userId}`,
+      message: 'k6 load test publish',
+      timestamp: new Date().toISOString(),
+      token, // for WS connect on gateway-api side
+    };
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+    const res = http.post(publishUrl, JSON.stringify(payload), { headers, timeout: wsHardTimeoutMs ? `${wsHardTimeoutMs}ms` : '5s' });
+    const ok = check(res, { 'publish status 2xx': (r) => r && r.status >= 200 && r.status < 300 });
+    wsConnectLatency.add(Date.now() - started);
     if (!ok) {
       wsErrors.add(1);
-      console.log('WS upgrade failed', url, res && res.error || res);
+      console.log('publish failed', publishUrl, res && res.status, res && res.body);
+    } else {
+      wsClosed.add(1); // treat as completed request
+      if (wsLingerMs > 0) {
+        sleep(wsLingerMs / 1000);
+      }
     }
   };
 }
@@ -163,6 +152,24 @@ function appendToken(url, token) {
   } catch (_) {
     return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
   }
+}
+
+function appendWsParams(url, token, extraParams = {}) {
+  let full = url;
+  const pairs = [];
+  if (token) pairs.push(['token', token]);
+  Object.entries(extraParams || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) {
+      pairs.push([k, v]);
+    }
+  });
+  if (pairs.length === 0) return full;
+  const qs = pairs
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+  full += url.includes('?') ? '&' : '?';
+  full += qs;
+  return full;
 }
 
 export function handleSummary(data) {
