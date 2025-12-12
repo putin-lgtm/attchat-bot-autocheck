@@ -9,30 +9,28 @@ const apiPerChat = Number(__ENV.API_PER_CHAT || 3);
 const loginUrl = __ENV.LOGIN_URL || 'http://localhost:8083/api/auth/login';
 const apiUrl = __ENV.API_URL || 'http://localhost:8083/api/data-botting';
 const publishUrl = __ENV.PUBLISH_URL || 'http://localhost:8083/api/publish-chat-event';
+const wsUrlBase = __ENV.WS_URL || 'ws://localhost:8086/ws';
 const username = __ENV.USERNAME || 'admin';
 const password = __ENV.PASSWORD || 'admin123';
 const providedToken = __ENV.TOKEN; // If set, skip login.
 const wsLingerMs = parseDurationMs(__ENV.MAX_DURATION || __ENV.WS_LINGER_MS || '0'); // keep WS open equal to MAX_DURATION by default
 const wsHardTimeoutMs = parseDurationMs(__ENV.WS_HARD_TIMEOUT_MS || '5000'); // force-close guard
 const brandIds = Array.from({ length: 10 }, (_, i) => `${i + 1}`);
-const streamTypes = [
-  'ANALYTICS',
-  'AUDIT',
-  'BILLING',
-  'CHAT',
-  'EMAIL',
-  'FILE',
-  'NOTIFY',
-  'ONLINE',
-];
+const streamTypes = (__ENV.STREAM_TYPES || 'CHAT')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0)
+  .map((s) => s.toUpperCase());
 const userIds = Array.from({ length: chatCount }, (_, i) => `${i + 1}`);
 
 // Metrics
 const apiLatency = new Trend('api_latency_ms');
 const wsConnectLatency = new Trend('ws_connect_latency_ms');
+const wsEndToEndLatency = new Trend('ws_end_to_end_latency_ms');
 const apiErrors = new Counter('api_errors');
 const wsErrors = new Counter('ws_errors');
 const wsClosed = new Counter('ws_closed');
+const wsReceiveErrors = new Counter('ws_receive_errors');
 
 export const options = {
   scenarios: {
@@ -89,8 +87,11 @@ export default function (data) {
 
   // Run WS and API concurrently within the same VU
   const wsRun = doWsBurst(token);
+  const wsRoundTrip = doWsRoundTrip(token);
   const apiRun = doApiBurst(requests);
+  console.log(`VU ${__VU} WS starting with streamTypes=${streamTypes.join(',')}`);
   wsRun();
+  wsRoundTrip();
   apiRun();
 }
 
@@ -126,6 +127,147 @@ function doWsBurst(token) {
       if (wsLingerMs > 0) {
         sleep(wsLingerMs / 1000);
       }
+    }
+  };
+}
+
+// WS round-trip: subscriber then publisher send, expect to receive broadcast and measure latency
+function doWsRoundTrip(token) {
+  return () => {
+    const userId = userIds[(__VU - 1) % userIds.length];
+    const brandId = brandIds[Math.floor(Math.random() * brandIds.length)];
+    const streamType = streamTypes[Math.floor(Math.random() * streamTypes.length)];
+    const roomId = `room_user_${userId}`;
+    const tokenShort = token ? `${String(token).slice(0, 12)}...` : '';
+
+    let recvAt = null;
+    let sendAt = null;
+    let subscriberClosed = false;
+
+    const subUrl = appendWsParams(wsUrlBase, token, {
+      brand_id: brandId,
+      type: streamType,
+      user_id: `sub_${userId}`,
+      room_id: roomId,
+    });
+    const pubUrl = appendWsParams(wsUrlBase, token, {
+      brand_id: brandId,
+      type: streamType,
+      user_id: `pub_${userId}`,
+      room_id: roomId,
+    });
+
+    const subRes = ws.connect(subUrl, {}, (socket) => {
+      let subInterval = null;
+      socket.on('open', () => {
+        // CSKH side: send heartbeat every 1s
+        subInterval = socket.setInterval(() => {
+          socket.send(
+            JSON.stringify({
+              type: 'cskh_heartbeat',
+              text: 'cskh hello',
+              room: roomId,
+              payload: { ts: new Date().toISOString(), role: 'cskh' },
+            }),
+          );
+        }, 1000);
+      });
+      socket.on('message', (msg) => {
+        recvAt = Date.now();
+        subscriberClosed = true;
+        if (subInterval) socket.clearInterval(subInterval);
+        socket.close();
+      });
+      socket.on('error', () => {
+        if (!subscriberClosed) {
+          wsReceiveErrors.add(1);
+          subscriberClosed = true;
+          if (subInterval) socket.clearInterval(subInterval);
+          socket.close();
+        }
+      });
+      socket.setTimeout(() => {
+        if (!subscriberClosed) {
+          wsReceiveErrors.add(1);
+          subscriberClosed = true;
+          if (subInterval) socket.clearInterval(subInterval);
+          socket.close();
+          console.log('WS subscriber hard-timeout close', subUrl);
+        }
+      }, wsHardTimeoutMs || parseDurationMs(__ENV.MAX_DURATION || '5000'));
+    });
+    const subOk = check(subRes, { 'sub ws status 101': (r) => r && r.status === 101 });
+    if (!subOk) {
+      wsErrors.add(1);
+      console.log('Subscriber WS upgrade failed', subUrl, subRes && subRes.error || subRes);
+      return;
+    }
+
+    const pubRes = ws.connect(pubUrl, {}, (socket) => {
+      let pubInterval = null;
+      socket.on('open', () => {
+        const payload = {
+          type: 'chat_message',
+          room: roomId,
+          payload: {
+            text: 'k6 roundtrip',
+            ts: new Date().toISOString(),
+            brand_id: brandId,
+            user_id: userId,
+          },
+        };
+        sendAt = Date.now();
+        socket.send(JSON.stringify(payload));
+        // User side: send message every 1s
+        pubInterval = socket.setInterval(() => {
+          socket.send(
+            JSON.stringify({
+              type: 'chat_message',
+              room: roomId,
+              payload: {
+                text: 'user hello',
+                ts: new Date().toISOString(),
+                brand_id: brandId,
+                user_id: userId,
+              },
+            }),
+          );
+        }, 1000);
+        if (wsLingerMs > 0) {
+          socket.setTimeout(() => {
+            if (pubInterval) socket.clearInterval(pubInterval);
+            socket.close();
+          }, wsLingerMs);
+        } else {
+          if (pubInterval) socket.clearInterval(pubInterval);
+          socket.close();
+        }
+      });
+      socket.on('error', () => {
+        wsErrors.add(1);
+        if (pubInterval) socket.clearInterval(pubInterval);
+        socket.close();
+      });
+      socket.setTimeout(() => {
+        if (pubInterval) socket.clearInterval(pubInterval);
+        socket.close();
+      }, wsHardTimeoutMs || parseDurationMs(__ENV.MAX_DURATION || '5000'));
+    });
+    const pubOk = check(pubRes, { 'pub ws status 101': (r) => r && r.status === 101 });
+    wsConnectLatency.add(wsHardTimeoutMs ? wsHardTimeoutMs : 0); // approximate since we open two sockets
+    if (!pubOk) {
+      wsErrors.add(1);
+      console.log('Publisher WS upgrade failed', pubUrl, pubRes && pubRes.error || pubRes);
+    }
+
+    // allow some time for delivery
+    sleep((wsLingerMs || 500) / 1000);
+    if (recvAt && sendAt) {
+      wsEndToEndLatency.add(recvAt - sendAt);
+      wsClosed.add(1);
+    } else {
+      wsReceiveErrors.add(1);
+      console.log(`No message received for room=${roomId} brand=${brandId} type=${streamType} token=${tokenShort}`);
     }
   };
 }
